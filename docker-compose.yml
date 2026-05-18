@@ -1,0 +1,54 @@
+# Declares every service and how they connect. `docker compose up` reads this
+# and starts the whole stack with one command — the heart of "Docker-first".
+
+services:
+  backend:
+    build: ./backend
+    # Loads LLM keys / cron config from .env (gitignored). The manual
+    # /briefings/run endpoint uses these too.
+    env_file:
+      - .env
+    ports:
+      # "host:container" — your Mac's :8081 forwards into the container's :8081.
+      - "8081:8081"
+    volumes:
+      # Bind-mount source for live reload: edit a .py file on your Mac and
+      # uvicorn --reload restarts inside the container instantly.
+      - ./backend:/app
+      # The SQLite file is bind-mounted to ./data on your Mac so you can open
+      # it directly with a GUI (DB Browser for SQLite) and watch rows appear.
+      # Still mounted ONLY into the backend — the "one writer" rule holds; a
+      # GUI reading the file is fine, no other service writes it.
+      - ./data:/data
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      # Anonymous volume that "shadows" node_modules. Classic Docker+Node
+      # gotcha: the bind mount above would otherwise hide the node_modules
+      # installed during `docker build`. This keeps the container's own copy.
+      - /app/node_modules
+    environment:
+      # NEXT_PUBLIC_ vars are exposed to the browser. The browser runs on your
+      # Mac, so it reaches the backend via the host-mapped localhost:8081.
+      - NEXT_PUBLIC_API_BASE=http://localhost:8081
+    depends_on:
+      - backend
+
+  # The daily briefing scheduler — its own container, same image as backend,
+  # different command. It writes to the SAME SQLite file (the one-writer rule
+  # still holds: backend API and cron are the only writers, both Tier 1/0
+  # code paths, never concurrent on the same row thanks to idempotency).
+  cron:
+    build: ./backend
+    command: ["python", "-m", "app.cron_entry"]
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+    depends_on:
+      - backend

@@ -1,0 +1,17 @@
+# Phase 1 only needs the web server. Data/LLM libs are added in their phases
+# so the image stays small and each phase's dependencies are easy to see.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# Phase 3 — data layer.
+# yfinance: equities/index (queries Yahoo's endpoints; pulls in pandas/numpy).
+# requests: used directly for Binance's public REST klines (crypto).
+yfinance~=0.2.50
+requests==2.32.3
+
+# Phase 6 — Tier 1 automatic briefing.
+# APScheduler: in-process cron (testable, timezone-correct in Python).
+# tzdata: ships the IANA timezone DB so ZoneInfo('America/New_York') works
+# inside the slim container (Debian slim has no system tz database).
+APScheduler~=3.10
+tzdata~=2024.1

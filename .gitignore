@@ -1,0 +1,22 @@
+# Secrets — real env file never committed; only .env.example is tracked
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# Local database & OS noise
+data/
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+
+# Personal teaching log — for me only, never committed
+TEACHING.md

@@ -1,0 +1,15 @@
+/* One import pulls in all of Tailwind v4. */
+@import "tailwindcss";
+
+/* Dark-first base — the product is dark mode by design, so the default
+   surface is dark and we never flash white. */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background-color: #0a0a0b; /* near-black, slight warmth — Apple-like */
+  color: #e7e7ea;
+  -webkit-font-smoothing: antialiased;
+}
