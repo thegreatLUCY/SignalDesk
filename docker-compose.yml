@@ -22,7 +22,12 @@ services:
       - ./data:/data
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      # Explicit: a multi-stage Dockerfile builds its LAST stage by default
+      # (that's `prod`). Pin `dev` so the everyday `docker compose up` keeps
+      # hot reload; docker-compose.prod.yml flips this to `prod`.
+      target: dev
     ports:
       - "3000:3000"
     volumes:

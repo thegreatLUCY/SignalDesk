@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app import briefing
+from app.clock import market_today
 from app.db import (
     add_annotation,
     get_annotations,
@@ -58,7 +59,20 @@ def annotate(date: str, ann: AnnotationIn):
     write path; also usable manually now."""
     b = get_briefing(date)
     if not b:
-        raise HTTPException(status_code=404, detail=f"No briefing for {date}")
+        # "The briefing can never fail to exist" — now also on the WRITE
+        # path. If you (or MCP) annotate TODAY before the 10:30 cron has
+        # run, generate it on the spot, then attach. A genuinely missing
+        # PAST date still 404s: we won't back-date a draft from today's
+        # signals — that would be garbage in, not history.
+        if date == market_today():
+            briefing.generate(date=date)  # idempotent
+            b = get_briefing(date)
+        if not b:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No briefing for {date} (and it's not today, so "
+                f"one can't be honestly generated for it)",
+            )
     add_annotation(
         b["id"],
         ann.body,

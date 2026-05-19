@@ -105,6 +105,7 @@ export default function CandleChart({
   }, [candles, overlays]); // re-create when data OR overlays change
 
   // h-full so the chart fills whatever pane the workspace gives it (autoSize
-  // on the chart tracks this element's size). Parent chain must supply height.
-  return <div ref={containerRef} className="h-full min-h-[320px] w-full" />;
+  // on the chart tracks this element's size). min-h lowered to 200 so a
+  // user-shrunk workspace stays usable instead of overflowing its pane.
+  return <div ref={containerRef} className="h-full min-h-[200px] w-full" />;
 }

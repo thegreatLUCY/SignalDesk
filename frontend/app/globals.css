@@ -13,3 +13,40 @@ body {
   color: #e7e7ea;
   -webkit-font-smoothing: antialiased;
 }
+
+/* Themed scrollbars — the default OS bars (esp. light on macOS/Windows)
+   were the one jarring non-dark surface in the whole app. Thin, low
+   contrast, brighten on hover. Firefox uses the standard properties;
+   WebKit/Chromium the ::-webkit pseudo-elements. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a2e transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2a2a2e;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #3a3a40;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Brand-tinted text selection instead of the OS default blue. */
+::selection {
+  background: rgba(56, 189, 248, 0.28); /* sky-400 @ ~28% */
+}
+
+/* Visible keyboard focus everywhere, without changing the mouse look. */
+:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.55);
+  outline-offset: 1px;
+}

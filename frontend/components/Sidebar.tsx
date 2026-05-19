@@ -58,12 +58,16 @@ export default function Sidebar({
   activeA,
   activeB,
   compare,
+  collapsed,
+  onToggleCollapse,
   onToggleCompare,
   onPick,
 }: {
   activeA: string | null;
   activeB: string | null;
   compare: boolean;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
   onToggleCompare: () => void;
   onPick: (symbol: string, additive: boolean) => void;
 }) {
@@ -159,7 +163,24 @@ export default function Sidebar({
             onClick={(e) =>
               onPick(a.symbol, compare || e.metaKey || e.ctrlKey)
             }
-            className={`mb-0.5 flex cursor-pointer items-center justify-between rounded-md px-2 py-2 transition-colors ${
+            // The one interactive surface that wasn't keyboard-reachable.
+            // role+tabIndex+keydown make it a real button for keyboard/AT
+            // users; aria-pressed exposes the A/B selected state. Drag
+            // (mouse-only) is untouched. (⌘/Ctrl-click adds a 2nd chart;
+            // keyboard activation respects the compare toggle instead.)
+            role="button"
+            tabIndex={0}
+            aria-pressed={isA || isB}
+            aria-label={`${a.symbol}${
+              isA ? " — open as chart A" : isB ? " — open as chart B" : ""
+            }`}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault(); // Space would otherwise scroll the rail
+                onPick(a.symbol, compare);
+              }
+            }}
+            className={`mb-0.5 flex cursor-pointer items-center justify-between rounded-md px-2 py-2 transition-colors outline-none focus-visible:ring-1 focus-visible:ring-sky-500/60 ${
               isA || isB
                 ? "bg-neutral-800 text-white"
                 : "text-neutral-300 hover:bg-neutral-900"
@@ -170,7 +191,12 @@ export default function Sidebar({
             }`}
           >
             <span className="flex items-center gap-1.5">
-              <span className="select-none text-neutral-700">⠿</span>
+              <span
+                aria-hidden="true"
+                className="select-none text-neutral-700"
+              >
+                ⠿
+              </span>
               <span className="text-sm font-medium">{a.symbol}</span>
               {isA && (
                 <span className="rounded bg-sky-500/20 px-1 text-[10px] text-sky-400">
@@ -202,15 +228,51 @@ export default function Sidebar({
     </div>
   );
 
+  // Collapsed: a slim rail that only offers "expand" — charts get the width.
+  if (collapsed) {
+    return (
+      <aside className="flex h-screen w-12 shrink-0 flex-col items-center border-r border-neutral-800 bg-neutral-950 py-4 transition-[width] duration-200">
+        <button
+          onClick={onToggleCollapse}
+          title="Expand watchlist"
+          aria-label="Expand watchlist"
+          className="rounded-md px-2 py-1 text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
+        >
+          »
+        </button>
+        <div className="mt-4 origin-center -rotate-90 select-none whitespace-nowrap text-[10px] uppercase tracking-widest text-neutral-700">
+          watchlist
+        </div>
+      </aside>
+    );
+  }
+
   return (
-    <aside className="flex h-screen w-64 shrink-0 flex-col border-r border-neutral-800 bg-neutral-950">
-      <div className="px-4 pb-3 pt-5">
+    <aside className="flex h-screen w-64 shrink-0 flex-col border-r border-neutral-800 bg-neutral-950 transition-[width] duration-200">
+      <div className="px-4 pb-3 pt-4">
+        {/* Collapse control sits above the mark, right-aligned — discoverable
+            without crowding the logo. */}
+        <div className="mb-1 flex justify-end">
+          <button
+            onClick={onToggleCollapse}
+            title="Collapse watchlist"
+            aria-label="Collapse watchlist"
+            className="rounded-md px-1.5 py-0.5 text-sm text-neutral-600 hover:bg-neutral-900 hover:text-neutral-200"
+          >
+            «
+          </button>
+        </div>
         {/* Logo is a transparent PNG (tight-cropped) — sits cleanly on the
             dark rail. Plain <img>: it's a static asset in /public, no need
             for next/image optimization machinery here. */}
         <img
           src="/logo.png"
           alt="SignalDesk — Market Analysis & Insights"
+          // Intrinsic size of the tight-cropped PNG. With Tailwind's
+          // height:auto + w-full, these attributes let the browser reserve
+          // the correct aspect-ratio box before load → zero layout shift.
+          width={1021}
+          height={303}
           className="w-full select-none"
           draggable={false}
         />

@@ -111,7 +111,7 @@ export default function ChartPane({
   }, [sig, enabled]);
 
   return (
-    <div className="flex h-full flex-col rounded-xl border border-neutral-800 bg-neutral-900/40">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/40">
       {/* Row 1: identity + range / close */}
       <div className="flex items-center justify-between gap-2 px-4 pt-3">
         <div className="flex items-center gap-2">
@@ -237,7 +237,10 @@ export default function ChartPane({
         })}
       </div>
 
-      <div className="flex-1 p-3">
+      {/* min-h-0 lets this chart area shrink inside a user-resized
+          workspace instead of forcing the pane to overflow (the flexbox
+          min-content trap that caused the dock-clip bug). */}
+      <div className="min-h-0 flex-1 p-3">
         {error ? (
           <div className="flex h-full items-center justify-center text-sm text-red-400">
             {error}

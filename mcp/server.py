@@ -65,40 +65,37 @@ def get_signals(symbol: str) -> dict:
 @mcp.tool()
 def get_briefing(date: str = "") -> dict:
     """The Tier-1 daily briefing (latest if no date) WITH its Tier-2
-    annotations. Read this before annotating so you build on it."""
+    annotations. This is also where your PRIOR Tier-2 notes live — read it
+    first so you extend/correct rather than repeat yourself."""
     return _get(f"/briefings/{date}" if date else "/briefings/latest")
 
 
-@mcp.tool()
-def get_asset_analysis(symbol: str) -> list:
-    """Prior notes for an asset (Tier-1 auto + any Tier-2 deep-dives), so
-    you can extend/correct rather than repeat."""
-    return _get(f"/assets/{symbol}/analysis")
-
-
-# ── WRITE tools (the Tier-2 path; stamped with this client's identity) ────
+# ── WRITE tool (the SINGLE Tier-2 path; stamped with this client's id) ────
 @mcp.tool()
 def write_annotation(body: str, date: str = "") -> dict:
-    """Layer a Tier-2 annotation onto a briefing (today's if no date). The
-    original draft is NOT modified — your note is appended and attributed to
-    this agent. Use to correct/extend the auto-draft."""
+    """Append ONE Tier-2 annotation to the daily briefing (the only Tier-2
+    surface). The original draft is never modified — your note is appended
+    and attributed to this agent.
+
+    IMPORTANT — a multi-asset deep-dive is ONE consolidated note, not one
+    call per asset. If asked to "deep-dive all assets", read get_signals for
+    each, then make a SINGLE write_annotation whose body covers every asset
+    (e.g. one short paragraph or bullet per symbol). Do not call this tool
+    in a loop.
+
+    No date → today's briefing; if today's doesn't exist yet it is generated
+    first (idempotent), so this never fails with "no briefing"."""
     if not date:
         latest = _get("/briefings/latest")
-        if not latest:
-            return {"error": "no briefing exists yet to annotate"}
-        date = latest["date"]
+        if latest:
+            date = latest["date"]
+        else:
+            # First-ever annotation before any briefing exists: ensure
+            # today's (idempotent, cheap if present) and target that date.
+            created = _post("/briefings/run?force=false", {})
+            date = created["date"]
     return _post(
         f"/briefings/{date}/annotations",
-        {"body": body, "provider": AGENT, "model": AGENT},
-    )
-
-
-@mcp.tool()
-def write_asset_analysis(symbol: str, body: str) -> dict:
-    """Write a Tier-2 deep-dive note for an asset. Append-only — coexists
-    with the Tier-1 auto-note; attributed to this agent."""
-    return _post(
-        f"/assets/{symbol}/analysis",
         {"body": body, "provider": AGENT, "model": AGENT},
     )
 

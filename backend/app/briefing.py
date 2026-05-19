@@ -17,17 +17,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app import llm
-from app.db import (
-    get_briefing,
-    list_assets,
-    replace_tier1_asset_note,
-    upsert_briefing,
-)
+from app.clock import market_today
+from app.db import get_briefing, upsert_briefing
 from app.signal_service import enriched_watchlist
 
 
 def _today() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
+    # Market timezone, defined once in app.clock — NOT UTC. (created_at
+    # timestamps below stay UTC; those are instants, this is a civil date.)
+    return market_today()
 
 
 def _seg(rows: list[dict]) -> dict[str, list[dict]]:
@@ -93,35 +91,28 @@ _SYSTEM = (
 )
 
 
-def _digest_prompt(date: str, seg: dict, stance: dict, vix: str | None) -> str:
+def _digest_prompt(
+    date: str, seg: dict, stance: dict, vix: str | None, macro_line: str
+) -> str:
     eq = "\n".join(_fmt(r) for r in seg["equities"]) or "(none)"
     cr = "\n".join(_fmt(r) for r in seg["crypto"]) or "(none)"
+    # macro_line is real FRED numbers (or "" if unavailable). The model may
+    # NARRATE them; it must not invent any, and they do NOT alter the
+    # deterministic stance above — that boundary is intentional.
+    macro_block = f"{macro_line}\n\n" if macro_line else ""
     return (
         f"Date: {date}\n"
         f"DETERMINISTIC RISK STANCE (do not change): {stance['call'].upper()} "
         f"— basis: {stance['rationale']}\n"
-        f"Market regime (VIX): {vix or 'n/a'}\n\n"
+        f"Market regime (VIX): {vix or 'n/a'}\n"
+        f"{macro_block}"
         f"EQUITIES & INDICES:\n{eq}\n\nCRYPTO:\n{cr}\n\n"
         "Write the briefing. In 'Risk read', explain WHY the given stance "
-        "holds using the breadth/VIX/move facts. Everywhere, ground every "
-        "statement in the data above; do not speculate on direction."
+        "holds using the breadth/VIX/move facts. If macro figures are given, "
+        "you may mention them as context only — they do NOT change the "
+        "stance. Ground every statement in the data above; do not speculate "
+        "on direction."
     )
-
-
-_ASSET_SYSTEM = (
-    "You write ONE concise, decision-oriented watchlist note: plain prose, "
-    "2–3 sentences, NO headings, NO bullets, NO price prediction, NO invented "
-    "numbers. State the current setup and what specifically to watch, using "
-    "ONLY the provided computed facts/flags."
-)
-
-
-def _asset_prompt(r: dict) -> str:
-    return "Asset facts:\n" + _fmt(r) + "\nWrite the note."
-
-
-def _asset_template(r: dict) -> str:
-    return f"Auto-note: {_fmt(r)}"
 
 
 def generate(date: str | None = None, force: bool = False) -> dict:
@@ -133,7 +124,17 @@ def generate(date: str | None = None, force: bool = False) -> dict:
     rows, stance, vix = enriched_watchlist()
     seg = _seg(rows)
 
-    ai = llm.narrate(_SYSTEM, _digest_prompt(date, seg, stance, vix))
+    # Best-effort macro context for the PROMPT only. Wrapped so a missing
+    # FRED key / network blip can never break the briefing — macro is
+    # enrichment, not a dependency (same rule as the LLM itself).
+    try:
+        from app.macro import macro_facts_line
+
+        macro_line = macro_facts_line()
+    except Exception:
+        macro_line = ""
+
+    ai = llm.narrate(_SYSTEM, _digest_prompt(date, seg, stance, vix, macro_line))
     if ai:
         narrative = ai["text"]
         provenance = {"tier": 1, "provider": ai["provider"], "model": ai["model"]}
@@ -161,20 +162,4 @@ def generate(date: str | None = None, force: bool = False) -> dict:
         }
     )
     upsert_briefing(date, body, provenance)
-
-    id_by_symbol = {a["symbol"]: a["id"] for a in list_assets()}
-    for r in rows:
-        aid = id_by_symbol.get(r["symbol"])
-        if aid is None:
-            continue
-        note = llm.narrate(_ASSET_SYSTEM, _asset_prompt(r))
-        if note:
-            n_body = note["text"]
-            n_prov = {"tier": 1, "provider": note["provider"], "model": note["model"]}
-        else:
-            n_body = _asset_template(r)
-            n_prov = {"tier": 1, "provider": "template", "model": "none"}
-        n_prov["generated_at"] = datetime.now(timezone.utc).isoformat()
-        replace_tier1_asset_note(aid, date, n_body, n_prov)
-
     return get_briefing(date)

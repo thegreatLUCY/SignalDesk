@@ -98,16 +98,115 @@ class BriefingListItem(BaseModel):
     created_at: str
 
 
-class AssetAnalysisItem(BaseModel):
-    id: int
-    symbol: str
-    date: str
-    body: str
-    provenance: dict  # tier 1 (auto) or tier 2 (deep-dive) + provider/model
-    created_at: str
-
-
 class BriefingDetail(Briefing):
     # The Tier-1 draft PLUS its Tier-2 annotations layered on top. The draft
     # is never mutated; annotations are append-only rows (the git-like rule).
     annotations: list[Annotation]
+
+
+# ── Phase 9: journal ────────────────────────────────────────────────────────
+
+
+class JournalEntry(BaseModel):
+    id: int
+    kind: str                       # 'real' | 'paper' | 'observation'
+    symbol: str | None
+    side: str | None                # 'long' | 'short' | None
+    entry: float | None
+    exit: float | None
+    size: float | None
+    status: str                     # 'open' | 'closed'
+    thesis: str | None              # why I entered
+    outcome: str | None             # the lesson, filled on close
+    opened_at: str | None
+    closed_at: str | None
+    created_at: str | None
+    updated_at: str | None
+    # DERIVED, never sent by the client — the deterministic conclusion.
+    pl_abs: float | None
+    pl_pct: float | None
+
+
+class JournalIn(BaseModel):
+    kind: str = "observation"
+    symbol: str | None = None
+    side: str | None = None
+    entry: float | None = None
+    exit: float | None = None
+    size: float | None = None
+    status: str = "open"
+    thesis: str | None = None
+    outcome: str | None = None
+    opened_at: str | None = None
+    closed_at: str | None = None
+
+
+class JournalPatch(BaseModel):
+    # All optional: PATCH only touches the keys you send (the db layer
+    # whitelists them anyway — defence in depth).
+    kind: str | None = None
+    symbol: str | None = None
+    side: str | None = None
+    entry: float | None = None
+    exit: float | None = None
+    size: float | None = None
+    status: str | None = None
+    thesis: str | None = None
+    outcome: str | None = None
+    opened_at: str | None = None
+    closed_at: str | None = None
+
+
+# ── Phase 9: notes ──────────────────────────────────────────────────────────
+
+
+class Note(BaseModel):
+    id: int
+    symbol: str | None              # resolved from asset_id via JOIN
+    title: str | None
+    body: str | None
+    pinned: bool
+    created_at: str | None
+    updated_at: str | None
+
+
+class NoteIn(BaseModel):
+    title: str = "Untitled"
+    body: str = ""
+    symbol: str | None = None
+
+
+class NotePatch(BaseModel):
+    title: str | None = None
+    body: str | None = None
+    symbol: str | None = None
+    pinned: bool | None = None
+
+
+# ── Phase 10: macro + news ──────────────────────────────────────────────────
+
+
+class MacroPoint(BaseModel):
+    series: str
+    label: str
+    unit: str
+    value: float | None          # None = FRED gave us nothing (never guessed)
+    observed_at: str | None      # the data's own date
+    fetched_at: str | None       # when WE pulled it (the cache clock)
+
+
+class NewsItem(BaseModel):
+    id: int
+    title: str
+    url: str
+    source: str
+    saved_at: str
+
+
+class NewsBrief(BaseModel):
+    # Descriptive-only summary of fetched headlines. Provenance badged like
+    # the briefing; deliberately NOT part of any signal/risk computation.
+    body: str
+    provider: str                # 'groq' | 'openrouter' | 'template' | 'none'
+    model: str
+    generated_at: str | None = None

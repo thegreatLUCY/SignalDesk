@@ -124,6 +124,11 @@ def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
+    # WAL already lets many readers run with one writer. busy_timeout makes a
+    # second writer WAIT (up to 5s) for the lock instead of instantly raising
+    # "database is locked" — needed now that /signals fetches assets in
+    # parallel (Phase 10 perf pass). Per-connection, like foreign_keys.
+    conn.execute("PRAGMA busy_timeout = 5000;")
     try:
         yield conn
         conn.commit()
@@ -143,6 +148,7 @@ def init_db() -> None:
         # while the cron writes — no "database is locked" stalls.
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.executescript(SCHEMA)
+        _migrate(conn)
 
         count = conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
         if count == 0:
@@ -154,6 +160,51 @@ def init_db() -> None:
                     for sym, yf, cls, aliases in SEED_ASSETS
                 ],
             )
+
+
+# Additive, idempotent schema migrations.
+#
+# THE LESSON: `CREATE TABLE IF NOT EXISTS` only ever runs once — on a DB
+# where the table already exists it is a silent no-op, so editing the SCHEMA
+# string does NOT change a live table. A schema is the shape for a *fresh*
+# DB; evolving an *existing* DB needs an explicit migration. SQLite's
+# `ALTER TABLE ADD COLUMN` is metadata-only (O(1), no row rewrite) and
+# non-destructive, so the safe pattern for a single-user local DB is:
+# "for every column we now expect, add it if the live table lacks it."
+# Each entry is (table, column, column-definition).
+_MIGRATIONS: list[tuple[str, str, str]] = [
+    # Phase 9 — promote the placeholder `journal` into a real trade log.
+    ("journal", "symbol", "symbol TEXT"),
+    ("journal", "side", "side TEXT"),                 # long | short | NULL
+    ("journal", "entry", "entry REAL"),
+    ("journal", "exit", '"exit" REAL'),               # exit is a SQL keyword
+    ("journal", "size", "size REAL"),
+    ("journal", "status", "status TEXT DEFAULT 'open'"),
+    ("journal", "thesis", "thesis TEXT"),             # why I entered
+    ("journal", "outcome", "outcome TEXT"),           # the lesson, on close
+    ("journal", "opened_at", "opened_at TEXT"),
+    ("journal", "closed_at", "closed_at TEXT"),
+    ("journal", "updated_at", "updated_at TEXT"),
+    # Phase 9 — notes gain creation time + pinning.
+    ("notes", "created_at", "created_at TEXT"),
+    ("notes", "pinned", "pinned INTEGER DEFAULT 0"),
+]
+
+
+def _migrate(conn) -> None:
+    """Bring every table up to the columns this code version expects.
+
+    Idempotent: `PRAGMA table_info` lists the columns that actually exist on
+    the live table, so we only ALTER what's missing — running this on every
+    boot (fresh DB or year-old DB) converges to the same shape and is a
+    no-op once applied."""
+    for table, column, ddl in _MIGRATIONS:
+        cols = {
+            r["name"]
+            for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
 
 def get_asset_by_symbol(symbol: str) -> dict | None:
@@ -341,92 +392,11 @@ def upsert_briefing(date: str, body: str, provenance: dict) -> None:
         )
 
 
-def get_asset_analysis_by_symbol(symbol: str) -> list[dict]:
-    """All notes (Tier-1 auto + Tier-2 deep-dives) for an asset, newest
-    first. Tier shows in provenance — the UI/agent can tell them apart."""
-    import json
-
-    a = get_asset_by_symbol(symbol)
-    if a is None:
-        return []
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT id, date, body, provenance, created_at FROM "
-            "asset_analysis WHERE asset_id=? ORDER BY date DESC, id DESC",
-            (a["id"],),
-        ).fetchall()
-    return [
-        {
-            "id": r["id"],
-            "symbol": a["symbol"],
-            "date": r["date"],
-            "body": r["body"],
-            "provenance": json.loads(r["provenance"]),
-            "created_at": r["created_at"],
-        }
-        for r in rows
-    ]
-
-
-def add_asset_analysis(
-    symbol: str, body: str, provenance: dict
-) -> dict | None:
-    """Append a Tier-2 deep-dive. APPEND-only: does NOT delete the Tier-1
-    auto-note (that's `replace_tier1_asset_note`'s job). Both coexist; the
-    audit trail keeps growing — same git-like rule as annotations."""
-    import json
-    from datetime import datetime, timezone
-
-    a = get_asset_by_symbol(symbol)
-    if a is None:
-        return None
-    today = datetime.now(timezone.utc).date().isoformat()
-    now = datetime.now(timezone.utc).isoformat()
-    with get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO asset_analysis "
-            "(asset_id, date, body, provenance, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (a["id"], today, body, json.dumps(provenance), now),
-        )
-        nid = cur.lastrowid
-    return {
-        "id": nid,
-        "symbol": a["symbol"],
-        "date": today,
-        "body": body,
-        "provenance": provenance,
-        "created_at": now,
-    }
-
-
-def replace_tier1_asset_note(
-    asset_id: int, date: str, body: str, provenance: dict
-) -> None:
-    """Per-asset Tier-1 auto-note. Idempotent per (asset, date): delete the
-    prior tier-1 note for that day, then insert. Tier-2 deep-dives are
-    separate rows (different provenance) and are NOT touched here."""
-    import json
-    from datetime import datetime, timezone
-
-    with get_conn() as conn:
-        conn.execute(
-            "DELETE FROM asset_analysis WHERE asset_id=? AND date=? "
-            "AND json_extract(provenance,'$.tier')=1",
-            (asset_id, date),
-        )
-        conn.execute(
-            "INSERT INTO asset_analysis "
-            "(asset_id, date, body, provenance, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (
-                asset_id,
-                date,
-                body,
-                json.dumps(provenance),
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
+# NOTE: the per-asset `asset_analysis` access layer was removed. Tier-2 now
+# lives ONLY as consolidated annotations on the daily briefing (see
+# add_annotation / get_annotations above). The `asset_analysis` table is
+# left in SCHEMA but unused — dropping it would need a destructive migration
+# for zero benefit on a single-user local DB; any old rows are simply inert.
 
 
 def upsert_signal(asset_id: int, computed_at: str, summary: dict) -> None:
@@ -521,3 +491,329 @@ def list_assets(enabled_only: bool = True) -> list[dict]:
         }
         for r in rows
     ]
+
+
+# ── Phase 9: trading journal ────────────────────────────────────────────────
+#
+# A learning journal, not a broker ledger. The user records WHY (thesis) and
+# later WHAT THEY LEARNED (outcome); the money math is never typed — P/L is
+# DERIVED from entry/exit/size/side. Same principle as the deterministic risk
+# call: a conclusion the user cannot accidentally contradict ("no garbage in").
+
+def _pl(side, entry, exit_, size):
+    """Deterministic P/L. Returns (abs, pct) or (None, None) when it can't be
+    computed yet (still open / missing a leg). Short = profit when price falls,
+    so the sign flips. We never guess — incomplete data yields None, exactly
+    like Tier 0."""
+    if entry is None or exit_ is None or not entry:
+        return None, None
+    direction = -1.0 if side == "short" else 1.0
+    pct = (exit_ / entry - 1.0) * 100.0 * direction
+    abs_ = ((exit_ - entry) * size * direction) if size else None
+    return abs_, pct
+
+
+def _journal_row(r: dict) -> dict:
+    pl_abs, pl_pct = _pl(r["side"], r["entry"], r["exit"], r["size"])
+    return {
+        "id": r["id"],
+        "kind": r["kind"],
+        "symbol": r["symbol"],
+        "side": r["side"],
+        "entry": r["entry"],
+        "exit": r["exit"],
+        "size": r["size"],
+        "status": r["status"],
+        "thesis": r["thesis"],
+        "outcome": r["outcome"],
+        "opened_at": r["opened_at"],
+        "closed_at": r["closed_at"],
+        "created_at": r["created_at"],
+        "updated_at": r["updated_at"],
+        "pl_abs": pl_abs,
+        "pl_pct": pl_pct,
+    }
+
+
+_JOURNAL_COLS = (
+    "id, kind, symbol, side, entry, \"exit\", size, status, thesis, "
+    "outcome, opened_at, closed_at, created_at, updated_at"
+)
+
+
+def list_journal() -> list[dict]:
+    """All journal entries, newest first. Open positions naturally sort to
+    the top because they're the most recent / actionable."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT {_JOURNAL_COLS} FROM journal "
+            "ORDER BY (status='open') DESC, id DESC"
+        ).fetchall()
+    return [_journal_row(dict(r)) for r in rows]
+
+
+def add_journal(data: dict) -> dict:
+    """Create an entry. `symbol` is stored as text (a snapshot) so an
+    observation on any ticker works even if it's not in the watchlist; we
+    still resolve it to asset_id when it matches the registry, keeping the FK
+    useful without making it a hard requirement."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    sym = (data.get("symbol") or "").strip().upper() or None
+    a = get_asset_by_symbol(sym) if sym else None
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO journal (asset_id, symbol, kind, side, entry, "
+            '"exit", size, status, thesis, outcome, opened_at, closed_at, '
+            "created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                a["id"] if a else None,
+                sym,
+                data.get("kind", "observation"),
+                data.get("side"),
+                data.get("entry"),
+                data.get("exit"),
+                data.get("size"),
+                data.get("status") or "open",
+                data.get("thesis"),
+                data.get("outcome"),
+                data.get("opened_at") or now[:10],
+                data.get("closed_at"),
+                now,
+                now,
+            ),
+        )
+        nid = cur.lastrowid
+        row = conn.execute(
+            f"SELECT {_JOURNAL_COLS} FROM journal WHERE id=?", (nid,)
+        ).fetchone()
+    return _journal_row(dict(row))
+
+
+# Only these fields are user-editable; everything else (ids, created_at,
+# computed P/L) is owned by the system. A whitelist, not a blanket UPDATE,
+# is the safe shape for a PATCH endpoint.
+_JOURNAL_EDITABLE = {
+    "kind", "symbol", "side", "entry", "exit", "size",
+    "status", "thesis", "outcome", "opened_at", "closed_at",
+}
+
+
+def update_journal(entry_id: int, patch: dict) -> dict | None:
+    """Partial update (PATCH semantics): only keys present in `patch` and on
+    the whitelist are written. Closing a trade = setting status='closed'
+    (+ exit/outcome); we stamp closed_at automatically so the timeline is
+    honest even if the user forgets."""
+    from datetime import datetime, timezone
+
+    fields = {k: v for k, v in patch.items() if k in _JOURNAL_EDITABLE}
+    if not fields:
+        return get_journal(entry_id)
+    if fields.get("status") == "closed" and not fields.get("closed_at"):
+        fields["closed_at"] = datetime.now(timezone.utc).isoformat()[:10]
+    fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # quote `exit` (reserved word) only where it appears as a column name
+    sets = ", ".join(
+        f'"{k}"=?' if k == "exit" else f"{k}=?" for k in fields
+    )
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"UPDATE journal SET {sets} WHERE id=?",
+            (*fields.values(), entry_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute(
+            f"SELECT {_JOURNAL_COLS} FROM journal WHERE id=?", (entry_id,)
+        ).fetchone()
+    return _journal_row(dict(row))
+
+
+def get_journal(entry_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            f"SELECT {_JOURNAL_COLS} FROM journal WHERE id=?", (entry_id,)
+        ).fetchone()
+    return _journal_row(dict(row)) if row else None
+
+
+def delete_journal(entry_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM journal WHERE id=?", (entry_id,))
+    return cur.rowcount > 0
+
+
+# ── Phase 9: Notion-like notes ──────────────────────────────────────────────
+#
+# Free-form markdown. Unlike asset_analysis (append-only audit trail), a note
+# is a living document the user OWNS — so here an UPDATE in place is correct.
+# Different data, different rule: provenance/audit tables never mutate;
+# personal documents do. Knowing which is which is the design judgement.
+
+def _note_row(r: dict) -> dict:
+    return {
+        "id": r["id"],
+        "symbol": r["symbol"],
+        "title": r["title"],
+        "body": r["body"],
+        "pinned": bool(r["pinned"]),
+        "created_at": r["created_at"],
+        "updated_at": r["updated_at"],
+    }
+
+
+def list_notes() -> list[dict]:
+    """Pinned first, then most-recently-edited — the order you actually want
+    to scan a knowledge base in."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT n.id, a.symbol AS symbol, n.title, n.body, "
+            "n.pinned, n.created_at, n.updated_at "
+            "FROM notes n LEFT JOIN assets a ON a.id = n.asset_id "
+            "ORDER BY n.pinned DESC, n.updated_at DESC"
+        ).fetchall()
+    return [_note_row(dict(r)) for r in rows]
+
+
+def _note_by_id(conn, note_id: int):
+    return conn.execute(
+        "SELECT n.id, a.symbol AS symbol, n.title, n.body, n.pinned, "
+        "n.created_at, n.updated_at FROM notes n "
+        "LEFT JOIN assets a ON a.id = n.asset_id WHERE n.id=?",
+        (note_id,),
+    ).fetchone()
+
+
+def get_note(note_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = _note_by_id(conn, note_id)
+    return _note_row(dict(row)) if row else None
+
+
+def add_note(title: str, body: str, symbol: str | None) -> dict:
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    sym = (symbol or "").strip().upper() or None
+    a = get_asset_by_symbol(sym) if sym else None
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO notes (asset_id, title, body, pinned, "
+            "created_at, updated_at) VALUES (?,?,?,0,?,?)",
+            (a["id"] if a else None, title, body, now, now),
+        )
+        row = _note_by_id(conn, cur.lastrowid)
+    return _note_row(dict(row))
+
+
+def update_note(note_id: int, patch: dict) -> dict | None:
+    """In-place edit (notes are living docs). asset_id is re-resolved when a
+    `symbol` is supplied so a note can be re-targeted to another asset."""
+    from datetime import datetime, timezone
+
+    sets, vals = [], []
+    if "title" in patch:
+        sets.append("title=?"); vals.append(patch["title"])
+    if "body" in patch:
+        sets.append("body=?"); vals.append(patch["body"])
+    if "pinned" in patch:
+        sets.append("pinned=?"); vals.append(1 if patch["pinned"] else 0)
+    if "symbol" in patch:
+        sym = (patch["symbol"] or "").strip().upper() or None
+        a = get_asset_by_symbol(sym) if sym else None
+        sets.append("asset_id=?"); vals.append(a["id"] if a else None)
+    if not sets:
+        return get_note(note_id)
+    sets.append("updated_at=?")
+    vals.append(datetime.now(timezone.utc).isoformat())
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"UPDATE notes SET {', '.join(sets)} WHERE id=?",
+            (*vals, note_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = _note_by_id(conn, note_id)
+    return _note_row(dict(row))
+
+
+def delete_note(note_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM notes WHERE id=?", (note_id,))
+    return cur.rowcount > 0
+
+
+# ── Phase 10: macro (FRED) + news (RSS) ─────────────────────────────────────
+#
+# Same read-through-cache discipline as prices: freshness = WHEN WE FETCHED
+# (the `fetched_at` column), never the data's own observation date. Macro
+# series move slowly, headlines hourly — the route layer sets the TTL.
+
+def replace_macro_series(
+    series: str, value: float | None, observed_at: str | None, fetched_at: str
+) -> None:
+    """One row per FRED series (latest value). Idempotent: delete the prior
+    row for this series, insert the fresh one — the macro table has no
+    UNIQUE(series), so we enforce 'one row per series' here, the same
+    delete-then-insert pattern used elsewhere."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM macro WHERE series = ?", (series,))
+        conn.execute(
+            "INSERT INTO macro (series, value, observed_at, fetched_at) "
+            "VALUES (?, ?, ?, ?)",
+            (series, value, observed_at, fetched_at),
+        )
+
+
+def get_macro() -> list[dict]:
+    """All stored macro series, plus the freshest fetched_at (so the route
+    can decide staleness without a second query)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT series, value, observed_at, fetched_at FROM macro"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_news(items: list[dict]) -> int:
+    """Insert headlines, de-duped by URL. `news.url` isn't UNIQUE in the
+    schema, so we filter against existing URLs in Python (fine at this
+    scale) — re-fetching the same feed never piles up duplicates. Returns
+    how many were new."""
+    if not items:
+        return 0
+    with get_conn() as conn:
+        have = {
+            r["url"]
+            for r in conn.execute("SELECT url FROM news").fetchall()
+        }
+        fresh = [i for i in items if i["url"] not in have]
+        conn.executemany(
+            "INSERT INTO news (title, url, source, saved_at) "
+            "VALUES (?, ?, ?, ?)",
+            [(i["title"], i["url"], i["source"], i["saved_at"]) for i in fresh],
+        )
+    return len(fresh)
+
+
+def get_news(limit: int = 40) -> list[dict]:
+    """Most recently saved headlines first."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, title, url, source, saved_at FROM news "
+            "ORDER BY saved_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def latest_news_fetch() -> str | None:
+    """saved_at of the newest headline — our 'when did we last pull' clock
+    for the news read-through cache (same idea as price_fetch)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT saved_at FROM news ORDER BY saved_at DESC LIMIT 1"
+        ).fetchone()
+    return row["saved_at"] if row else None

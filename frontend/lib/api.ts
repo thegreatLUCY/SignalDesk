@@ -143,3 +143,119 @@ export async function runBriefing(force = false): Promise<Briefing> {
 
 export const getOhlc = (symbol: string, days = 180) =>
   getJSON<Ohlc>(`/assets/${encodeURIComponent(symbol)}/ohlc?days=${days}`);
+
+// ── Phase 10: macro + news ─────────────────────────────────────────────────
+
+export type MacroPoint = {
+  series: string;
+  label: string;
+  unit: string;
+  value: number | null; // null = FRED gave nothing; UI shows '—'
+  observed_at: string | null;
+  fetched_at: string | null;
+};
+
+export type NewsItem = {
+  id: number;
+  title: string;
+  url: string;
+  source: string;
+  saved_at: string;
+};
+
+export type NewsBrief = {
+  body: string;
+  provider: string; // 'groq' | 'openrouter' | 'template' | 'none'
+  model: string;
+  generated_at?: string | null;
+};
+
+export const getMacro = () => getJSON<MacroPoint[]>("/macro");
+export const getNews = () => getJSON<NewsItem[]>("/news");
+export const getNewsBrief = () => getJSON<NewsBrief | null>("/news/brief");
+
+// ── Phase 9: journal + notes ───────────────────────────────────────────────
+
+// A tiny helper for the write verbs the journal/notes need. Kept local so
+// the read-only getJSON above stays simple.
+async function send<T>(
+  method: "POST" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`API ${res.status} on ${method} ${path}`);
+  return res.json() as Promise<T>;
+}
+
+export type JournalEntry = {
+  id: number;
+  kind: "real" | "paper" | "observation";
+  symbol: string | null;
+  side: "long" | "short" | null;
+  entry: number | null;
+  exit: number | null;
+  size: number | null;
+  status: "open" | "closed";
+  thesis: string | null;
+  outcome: string | null;
+  opened_at: string | null;
+  closed_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  pl_abs: number | null; // computed server-side — never sent by us
+  pl_pct: number | null;
+};
+
+export type JournalIn = Partial<
+  Omit<
+    JournalEntry,
+    "id" | "created_at" | "updated_at" | "pl_abs" | "pl_pct"
+  >
+>;
+
+export const listJournal = () => getJSON<JournalEntry[]>("/journal");
+
+export const addJournal = (e: JournalIn) =>
+  send<JournalEntry>("POST", "/journal", e);
+
+export const patchJournal = (id: number, p: JournalIn) =>
+  send<JournalEntry>("PATCH", `/journal/${id}`, p);
+
+export const deleteJournal = (id: number) =>
+  send<{ ok: boolean }>("DELETE", `/journal/${id}`);
+
+export type Note = {
+  id: number;
+  symbol: string | null;
+  title: string | null;
+  body: string | null;
+  pinned: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type NoteIn = {
+  title?: string;
+  body?: string;
+  symbol?: string | null;
+  pinned?: boolean;
+};
+
+export const listNotes = () => getJSON<Note[]>("/notes");
+
+export const addNote = (n: NoteIn) => send<Note>("POST", "/notes", n);
+
+export const patchNote = (id: number, p: NoteIn) =>
+  send<Note>("PATCH", `/notes/${id}`, p);
+
+export const deleteNote = (id: number) =>
+  send<{ ok: boolean }>("DELETE", `/notes/${id}`);
+
+// POST = explicitly spend the LLM call (the "summarise" button). GET
+// (getNewsBrief) only returns a cached one — quota is never burned on view.
+export const makeNewsBrief = () => send<NewsBrief>("POST", "/news/brief");

@@ -1,0 +1,23 @@
+# Opt-in PRODUCTION frontend — the "use it like a real app" mode.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build
+#
+# What it changes vs the default dev stack:
+#   • builds the Dockerfile `prod` stage (next build → next start): the
+#     dashboard is precompiled + minified, so a refresh is ~50–150ms with
+#     ZERO on-demand recompile (vs dev's multi-second cold compile).
+#   • drops the source bind mount via the `!override` tag (Compose ≥ 2.24)
+#     — without it, Compose CONCATENATES volume lists and the host source
+#     would shadow the image's built `.next`, breaking `next start`.
+#
+# The trade: no hot reload. Edit code → re-run the command to rebuild.
+# Backend/cron are untouched (this file only overrides the frontend).
+services:
+  frontend:
+    build:
+      context: ./frontend
+      target: prod
+    # !override REPLACES the inherited volumes instead of merging — so the
+    # dev bind mount + anon node_modules are gone and the baked image is
+    # used as-is.
+    volumes: !override []

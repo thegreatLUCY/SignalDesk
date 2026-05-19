@@ -9,7 +9,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import init_db
-from app.routes import assets, briefings, signals
+from app.routes import (
+    assets,
+    briefings,
+    journal,
+    macro,
+    news,
+    notes,
+    signals,
+)
 
 
 @asynccontextmanager
@@ -38,10 +46,14 @@ app.add_middleware(
 app.include_router(assets.router)
 app.include_router(signals.router)
 app.include_router(briefings.router)
+app.include_router(journal.router)
+app.include_router(notes.router)
+app.include_router(macro.router)
+app.include_router(news.router)
 
 
 @app.get("/health")
 def health():
     """Liveness probe. Proves the service is up and the frontend can reach it
     through Docker's port mapping + CORS."""
-    return {"status": "ok", "service": "signaldesk-backend", "phase": 8}
+    return {"status": "ok", "service": "signaldesk-backend", "phase": 10}

@@ -1,0 +1,5 @@
+# Keep the prod stage's `COPY . .` from dragging in the host's installed
+# deps / build output (which would shadow the image's own npm install).
+node_modules
+.next
+npm-debug.log

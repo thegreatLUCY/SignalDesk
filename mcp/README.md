@@ -41,7 +41,8 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
   }
 }
 ```
-Restart Claude Desktop. In a chat: "use signaldesk to deep-dive NVDA".
+Restart Claude Desktop. In a chat: _"use signaldesk: deep-dive every asset
+and write one consolidated Tier-2 annotation on today's briefing."_
 
 ## Connect Claude Code
 
@@ -68,9 +69,15 @@ which makes notes badge `tier 2 · claude` vs `tier 2 · codex` in the UI.
 
 ## Tools exposed
 
-Read: `list_assets`, `get_signals(symbol)`, `get_briefing(date?)`,
-`get_asset_analysis(symbol)`.
-Write: `write_annotation(body,date?)`, `write_asset_analysis(symbol,body)`.
+Read: `list_assets`, `get_signals(symbol)`, `get_briefing(date?)`.
+Write: `write_annotation(body, date?)` — the **single** Tier-2 path.
 
-Writes go through the backend and appear in the dashboard's briefing bar /
-asset notes, attributed to the agent — the Tier-1 draft is never modified.
+Tier-2 lives only as **consolidated annotations on the daily briefing**.
+A multi-asset deep-dive is **one** `write_annotation` whose body covers
+every asset — not one call per asset. Prior Tier-2 context is read back
+via `get_briefing` (it returns the draft + all its annotations). The
+Tier-1 draft itself is never modified.
+
+Example prompt: _"Use signaldesk: read every asset's signals and today's
+briefing, then write one consolidated Tier-2 deep-dive annotation covering
+all assets."_

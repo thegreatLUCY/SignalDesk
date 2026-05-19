@@ -5,6 +5,7 @@ Note the separation: `signals.py` is pure math and knows nothing about the
 DB or network. THIS module does the I/O and calls into it. That boundary is
 the whole reason Tier 0 is trustworthy and testable.
 """
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from app import signals
@@ -17,8 +18,39 @@ from app.db import (
 from app.prices import get_ohlc
 
 
+def _prefetch_ohlc(symbols: list[str]) -> dict[str, list[dict]]:
+    """Fetch many symbols' candles CONCURRENTLY.
+
+    Why this is the perf fix: the watchlist loop was serial, so a cold cache
+    paid ~10 network round-trips back-to-back (~3s). The slow part is pure
+    I/O (yfinance/Binance HTTP), which releases the GIL — so a small thread
+    pool collapses 10×latency into ~1×. We parallelise ONLY the fetch; the
+    SQLite writes (compute→upsert) still happen serially in the caller, so
+    the §0 one-writer discipline is untouched. (get_ohlc's own read-through
+    cache may still write under load — that's why we added PRAGMA
+    busy_timeout: competing writers queue instead of erroring.)
+    """
+    out: dict[str, list[dict]] = {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {
+            pool.submit(lambda s=s: get_ohlc(s)["candles"]): s
+            for s in symbols
+        }
+        for fut, sym in futures.items():
+            try:
+                out[sym] = fut.result()
+            except Exception:
+                out[sym] = []  # one bad symbol must not sink the batch
+    return out
+
+
 def _today() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
+    # Civil "which trading day" date → market tz, same source as the
+    # briefing, so signal `computed_at` and the briefing date can't drift
+    # apart near midnight (was UTC: part of the split-brain).
+    from app.clock import market_today
+
+    return market_today()
 
 
 def _market_vix_regime() -> str | None:
@@ -100,16 +132,17 @@ def enriched_watchlist() -> tuple[list[dict], dict, str | None]:
     """
     today = _today()
     regime = _market_vix_regime()
-    spy = get_ohlc("SPY")["candles"]
-    btc = get_ohlc("BTC-USD")["candles"]
-    spy21 = signals.return_over(spy, 21)
-    btc21 = signals.return_over(btc, 21)
+    assets = list_assets(enabled_only=True)
+    # One concurrent batch covers the whole watchlist + both benchmarks.
+    syms = {a["symbol"] for a in assets} | {"SPY", "BTC-USD"}
+    cache = _prefetch_ohlc(list(syms))
+    spy21 = signals.return_over(cache.get("SPY", []), 21)
+    btc21 = signals.return_over(cache.get("BTC-USD", []), 21)
 
     rows: list[dict] = []
-    for a in list_assets(enabled_only=True):
-        try:
-            candles = get_ohlc(a["symbol"])["candles"]
-        except Exception:
+    for a in assets:
+        candles = cache.get(a["symbol"], [])
+        if not candles:
             continue
         s = signals.compute(candles, regime)
         prev = get_previous_signal(a["id"], today)
@@ -141,10 +174,14 @@ def signals_for_watchlist() -> list[dict]:
     """Latest summary for every enabled asset — feeds the sidebar columns.
     Computes the VIX regime once and reuses it for all rows."""
     regime = _market_vix_regime()
+    assets = list_assets(enabled_only=True)
+    cache = _prefetch_ohlc([a["symbol"] for a in assets])
     out: list[dict] = []
-    for a in list_assets(enabled_only=True):
+    for a in assets:
+        candles = cache.get(a["symbol"], [])
+        if not candles:
+            continue  # one bad asset shouldn't blank the whole watchlist
         try:
-            candles = get_ohlc(a["symbol"])["candles"]
             summary = signals.compute(candles, regime)
             upsert_signal(a["id"], _today(), summary)
             out.append(
@@ -156,6 +193,5 @@ def signals_for_watchlist() -> list[dict]:
                 }
             )
         except Exception:
-            # One bad asset shouldn't blank the whole watchlist.
             continue
     return out

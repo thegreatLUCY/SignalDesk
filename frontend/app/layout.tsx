@@ -1,9 +1,13 @@
 import "./globals.css";
 import type { ReactNode } from "react";
 
+// Next App Router auto-detects `app/icon.png` (or favicon.ico) as the
+// favicon — no `icons` config needed here. This just makes the tab/bookmark
+// text read cleanly next to that favicon.
 export const metadata = {
-  title: "SignalDesk Local",
-  description: "Private local-first AI market research dashboard",
+  title: "SignalDesk — local market research desk",
+  description:
+    "Private, local-first AI market research, signals & trading journal.",
 };
 
 // The root layout wraps every page. `dark` class is set up-front so the dark

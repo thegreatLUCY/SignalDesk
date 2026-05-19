@@ -18,6 +18,14 @@ simplified Bloomberg-terminal feel, and an AI research assistant.
 |---|---|
 | ![Watchlist](docs/screenshots/watchlist.png) | ![Compare](docs/screenshots/compare.png) |
 
+| Signals (overlays + legend toggles) | Macro tab (FRED, deterministic) |
+|---|---|
+| ![Signals](docs/screenshots/signals.png) | ![Macro](docs/screenshots/macro.png) |
+
+| News tab (RSS + descriptive brief) | |
+|---|---|
+| ![News](docs/screenshots/news.png) | |
+
 ## The idea: a 3-tier "brain"
 
 A reviewer pipeline, not parallel opinions — each tier has a distinct job and
@@ -59,11 +67,19 @@ the model's opinion.
 - **Archive** — browse past briefings by date; Tier-2 annotations layered
   beneath the draft with their own provenance badges.
 - **MCP server** — one client-agnostic stdio server (Claude Desktop /
-  Claude CLI / Codex); strong model reads local data and writes Tier-2
-  notes back, attributed per client.
-
-Planned: trading journal (real/paper/observation), macro dashboard (FRED),
-saved news, final polish.
+  Claude CLI / Codex); the strong model reads local data and writes **one
+  consolidated Tier-2 annotation** onto the daily briefing (the single
+  Tier-2 surface), attributed per client.
+- **Desk dock** — a trading journal (real / paper / observation) with
+  thesis-now / lesson-on-close and **computed** P/L (never typed), plus
+  Notion-like markdown notes (pin, per-asset). Bottom dock mirrors the
+  briefing bar: the desk speaks at the top, you write back at the bottom.
+- **Macro & News** — the top dock is a 3-tab desk: **Briefing | Macro |
+  News**. Macro = deterministic FRED series (yields, curve, Fed funds,
+  unemployment, CPI YoY) — the same numbers are handed to the briefing to
+  *narrate* (never invent). News = free RSS headlines (CNBC / WSJ / Fed)
+  with an on-demand, descriptive LLM brief that is deliberately walled off
+  from the deterministic risk stance.
 
 ## Tech stack
 
@@ -87,7 +103,22 @@ docker compose up --build
 
 Without an LLM key everything still works — the briefing uses its
 deterministic templated fallback. Add a free Groq key to `.env` for real AI
-briefings (the cron + the ↻ regenerate button use it).
+briefings (the cron + the ↻ regenerate button use it). A free
+`FRED_API_KEY` (fred.stlouisfed.org) enables the Macro tab; everything
+degrades gracefully without it.
+
+### Run modes
+
+- **Dev (default)** — `docker compose up --build`. Turbopack + hot reload;
+  edit a file and it updates live.
+- **Prod (opt-in, fast)** — precompiled, ~50–150ms page loads, **no** hot
+  reload. Use when you just want to *use* the app:
+
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build
+  ```
+
+  (Needs Docker Compose ≥ 2.24 for the `!override` volume tag.)
 
 ## Connect the AI (Tier 2)
 
