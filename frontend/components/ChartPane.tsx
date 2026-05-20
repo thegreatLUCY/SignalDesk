@@ -14,11 +14,26 @@ import {
   type Ohlc,
 } from "@/lib/api";
 
+// Match the design ref's full range strip. Each is just a `days` value the
+// existing get_ohlc/get_signals already accept — no new endpoints.
 const RANGES = [
+  { label: "1M", days: 30 },
   { label: "3M", days: 90 },
   { label: "6M", days: 180 },
   { label: "1Y", days: 365 },
+  { label: "MAX", days: 1825 }, // ~5y is "long enough" for this tool
 ];
+
+// Price formatting adapts to magnitude (a $4 token and a $77k BTC shouldn't
+// share precision). Same pattern Sidebar uses.
+function fmtPrice(v: number | null): string {
+  if (v === null) return "—";
+  const dp = v >= 100 ? 2 : v >= 1 ? 2 : 4;
+  return v.toLocaleString(undefined, {
+    minimumFractionDigits: dp,
+    maximumFractionDigits: dp,
+  });
+}
 
 // ONE place mapping an overlay key → its label + color. Backend just sends
 // keyed series; adding a new overlay later is a line here, not new plumbing.
@@ -112,35 +127,51 @@ export default function ChartPane({
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/40">
-      {/* Row 1: identity + range / close */}
-      <div className="flex items-center justify-between gap-2 px-4 pt-3">
-        <div className="flex items-center gap-2">
+      {/* Row 1: identity + price + range / close.
+          Restyled to the Remake ref: tile-style slot badge, large symbol +
+          inline price + pct, full range strip. All data already on `sig`. */}
+      <div className="flex items-start justify-between gap-3 px-4 pb-1 pt-4">
+        <div className="flex min-w-0 items-center gap-3">
           <span
-            className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-sm font-semibold ${
               slot === "A"
                 ? "bg-sky-500/20 text-sky-400"
                 : "bg-violet-500/20 text-violet-400"
             }`}
+            title={`Slot ${slot}`}
           >
             {slot}
           </span>
-          <span className="text-lg font-semibold tracking-tight">{symbol}</span>
-          {sig && sig.pct_change !== null && (
-            <span className={`text-sm font-medium ${pctColor(sig.pct_change)}`}>
-              {sig.pct_change > 0 ? "+" : ""}
-              {sig.pct_change}%
+          <div className="flex min-w-0 items-baseline gap-2.5">
+            <span className="truncate text-2xl font-bold tracking-tight text-neutral-100">
+              {symbol}
             </span>
-          )}
+            {sig && sig.last_close !== null && (
+              <span className="text-2xl font-medium tabular-nums text-neutral-100">
+                {fmtPrice(sig.last_close)}
+              </span>
+            )}
+            {sig && sig.pct_change !== null && (
+              <span
+                className={`text-sm font-semibold tabular-nums ${pctColor(
+                  sig.pct_change,
+                )}`}
+              >
+                {sig.pct_change > 0 ? "+" : ""}
+                {sig.pct_change}%
+              </span>
+            )}
+          </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-0.5">
           {RANGES.map((r) => (
             <button
               key={r.days}
               onClick={() => setDays(r.days)}
-              className={`rounded px-2 py-0.5 text-[11px] ${
+              className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
                 days === r.days
-                  ? "bg-neutral-700 text-white"
-                  : "text-neutral-500 hover:text-neutral-200"
+                  ? "bg-neutral-800 text-neutral-100"
+                  : "text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
               }`}
             >
               {r.label}

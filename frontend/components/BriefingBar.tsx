@@ -7,7 +7,7 @@
 // Provenance is color-coded everywhere (emerald = AI, amber = templated,
 // per-annotation badges too) so you always know who wrote what.
 
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import BriefingCalendar from "@/components/BriefingCalendar";
 import MacroPanel from "@/components/MacroPanel";
@@ -15,11 +15,13 @@ import NewsPanel from "@/components/NewsPanel";
 import {
   addAnnotation,
   getBriefingByDate,
+  getFng,
   listBriefings,
   runBriefing,
   type Annotation,
   type BriefingDetail,
   type BriefingListItem,
+  type FngPoint,
 } from "@/lib/api";
 
 function RiskChip({ stance }: { stance?: string }) {
@@ -172,20 +174,251 @@ function Markdown({ text }: { text: string }) {
   );
 }
 
-function AnnotationCard({ a }: { a: Annotation }) {
+// ── Briefing card (Pencil restyle, style-only) ─────────────────────────────
+// Everything below derives from structured fields already in
+// b.provenance (risk_stance, vix_regime, snapshot[]). No string parsing,
+// no fabricated values — same no-garbage rule the rest of the app follows.
+
+function MetricTile({
+  label,
+  value,
+  color,
+  title,
+}: {
+  label: string;
+  value: ReactNode; // ReactNode (not string) so the F&G tile can inline a
+                    // qualifier next to its number without breaking the
+                    // shared 2-line tile rhythm.
+  color: string;
+  title?: string;
+}) {
   return (
-    <div className="rounded-lg border border-sky-900/50 bg-sky-950/20 p-3">
-      <div className="mb-1 flex items-center gap-2">
-        <ProvBadge
-          provider={a.provenance.provider}
-          model={a.provenance.model}
-          tier={a.provenance.tier}
-        />
-        <span className="text-[10px] text-neutral-600">
-          {new Date(a.created_at).toLocaleString()}
+    <div
+      className="rounded-md border border-neutral-800 bg-neutral-950/40 px-3 py-2"
+      title={title}
+    >
+      <div className="text-[10px] font-medium uppercase tracking-widest text-neutral-500">
+        {label}
+      </div>
+      <div className={`text-lg font-semibold tabular-nums ${color}`}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function BriefingActionLine({ a }: { a: Annotation }) {
+  // Tier-2 = cyan TIER-2; tier-1/manual = amber NOTE. We never invent
+  // an ACTION category we don't have in the data. The body uses the same
+  // markdown renderer the briefing draft uses, so **bold** / bullets /
+  // headings written by the strong model render properly inside the card.
+  const isT2 = a.provenance.tier === 2;
+  const label = isT2 ? "TIER-2" : "NOTE";
+  const cls = isT2
+    ? "border-cyan-700/50 bg-cyan-600/15 text-cyan-300"
+    : "border-amber-700/50 bg-amber-600/15 text-amber-300";
+  return (
+    <div className="flex items-start gap-2">
+      <span
+        className={`mt-0.5 shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-widest ${cls}`}
+        title={`${a.provenance.provider} · ${a.provenance.model}`}
+      >
+        {label}
+      </span>
+      <div className="min-w-0 flex-1">
+        <Markdown text={a.body} />
+      </div>
+    </div>
+  );
+}
+
+function BriefingCard({
+  b,
+  onRegenerate,
+  busy,
+}: {
+  b: BriefingDetail;
+  onRegenerate: () => void;
+  busy: boolean;
+}) {
+  // Crypto Fear & Greed — fourth metric tile. Real data from /fng
+  // (alternative.me). Display-only; deliberately not part of the
+  // deterministic risk computation (sentiment ≠ stance).
+  const [fng, setFng] = useState<FngPoint | null>(null);
+  useEffect(() => {
+    getFng()
+      .then((d) => setFng(d ?? null))
+      .catch(() => setFng(null));
+  }, []);
+  const fngColor = !fng
+    ? "text-neutral-500"
+    : fng.value < 25
+      ? "text-red-400"
+      : fng.value < 45
+        ? "text-orange-400"
+        : fng.value < 55
+          ? "text-amber-400"
+          : fng.value < 75
+            ? "text-lime-400"
+            : "text-emerald-400";
+
+  // Breadth: how much of the watchlist is in an uptrend right now. Uses the
+  // per-asset snapshot the briefing already persisted (no extra fetch).
+  const snap =
+    (b.provenance.snapshot as
+      | Array<{ symbol: string; pct: number; trend: string | null }>
+      | undefined) ?? [];
+  // No snapshot → don't fabricate a breadth %. Older briefings predate this
+  // field, and showing "0%, DOWN, narrow leadership" would be a lie.
+  const hasBreadth = snap.length > 0;
+  const upCount = snap.filter((s) => s.trend === "up").length;
+  const breadthPct = hasBreadth
+    ? Math.round((upCount / snap.length) * 100)
+    : null;
+  const leadership =
+    breadthPct === null
+      ? "—"
+      : breadthPct >= 60
+        ? "broad leadership"
+        : breadthPct <= 40
+          ? "narrow leadership"
+          : "mixed leadership";
+  const stance = b.provenance.risk_stance ?? "neutral";
+  const tone =
+    stance === "risk-on"
+      ? "Risk-on"
+      : stance === "risk-off"
+        ? "Risk-off"
+        : "Balanced";
+  const trendLabel =
+    breadthPct === null
+      ? "—"
+      : breadthPct >= 60
+        ? "UP"
+        : breadthPct <= 40
+          ? "DOWN"
+          : "MIXED";
+  const trendColor =
+    breadthPct === null
+      ? "text-neutral-500"
+      : breadthPct >= 60
+        ? "text-emerald-400"
+        : breadthPct <= 40
+          ? "text-red-400"
+          : "text-amber-400";
+  const breadthColor = trendColor;
+  const vix = (b.provenance.vix_regime ?? "—").toUpperCase();
+  // Both extremes are warnings, not "good vs bad". LOW = complacent /
+  // mean-reversion risk; HIGH/ELEVATED = realised fear. Matches the ref's
+  // VOL LOW shown in red. NORMAL sits in the middle (amber).
+  const volColor =
+    vix === "—"
+      ? "text-neutral-500"
+      : vix === "NORMAL"
+        ? "text-amber-400"
+        : "text-red-400"; // LOW, HIGH, ELEVATED → red
+
+  let updated = "—";
+  try {
+    updated = new Date(b.created_at).toLocaleTimeString("en-US", {
+      timeZone: "America/New_York",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  } catch {
+    /* keep the em-dash */
+  }
+
+  return (
+    <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[10px] font-medium uppercase tracking-widest text-neutral-500">
+          Daily Briefing
+        </span>
+        <button
+          onClick={onRegenerate}
+          disabled={busy}
+          title="Regenerate today's briefing"
+          aria-label="Regenerate briefing"
+          className="rounded-md p-1 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-50"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+            <path
+              d="M11.5 2L14 4.5L4.5 14L1.5 14.5L2 11.5L11.5 2z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
+
+      <div className="mb-3 text-base font-semibold text-neutral-100">
+        Risk tone:{" "}
+        <span className="text-neutral-300">
+          {tone}, {leadership}
         </span>
       </div>
-      <Markdown text={a.body} />
+
+      {/* 2 columns on narrow widths → 4 across once the dock is wide enough.
+          The F&G tile fits as a peer of Trend / Breadth / Vol — same chrome,
+          same rhythm — with its alternative.me classification inlined as a
+          smaller qualifier next to the number. */}
+      <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <MetricTile label="Trend" value={trendLabel} color={trendColor} />
+        <MetricTile
+          label="Breadth"
+          value={breadthPct === null ? "—" : `${breadthPct}%`}
+          color={breadthColor}
+        />
+        <MetricTile label="Vol" value={vix} color={volColor} />
+        <MetricTile
+          label="Crypto F&G"
+          color={fngColor}
+          title={
+            fng
+              ? `Crypto Fear & Greed · alternative.me · ${fng.label}`
+              : "Crypto Fear & Greed — alternative.me (loading or offline)"
+          }
+          value={
+            fng ? (
+              <>
+                {fng.value}
+                <span className="ml-1 align-middle text-[11px] font-medium opacity-80">
+                  {fng.label}
+                </span>
+              </>
+            ) : (
+              "—"
+            )
+          }
+        />
+      </div>
+
+      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-widest text-neutral-600">
+        Tier-2 reviews{" "}
+        <span className="normal-case text-neutral-700">
+          — layered on top, the draft below is never changed
+        </span>
+      </div>
+      {b.annotations.length === 0 ? (
+        <p className="text-xs text-neutral-600">
+          No reviews yet. The strong model (via MCP) — or you — can layer
+          corrections / context here.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {b.annotations.map((a) => (
+            <BriefingActionLine key={a.id} a={a} />
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3 text-[10px] uppercase tracking-widest text-neutral-700">
+        updated {updated} ET
+      </div>
     </div>
   );
 }
@@ -348,7 +581,10 @@ export default function BriefingBar() {
               onToday={goToday}
             />
           )}
-          {open && tab === "briefing" && (
+          {/* Header regenerate appears on Macro/News tabs only — on the
+              Briefing tab the card's pencil owns this action, so we don't
+              show two regenerate controls at once. */}
+          {open && tab !== "briefing" && (
             <button
               onClick={regenerate}
               disabled={busy}
@@ -370,44 +606,32 @@ export default function BriefingBar() {
           {err && <p className="mb-2 text-sm text-red-400">{err}</p>}
           {b ? (
             <>
-              <Markdown text={b.body} />
+              {/* Restyled briefing card (Pencil ref) on top — the card is
+                  the summary, the composer sits right under it (so adding
+                  a Tier-2 note doesn't require scrolling past the whole
+                  draft), and the full markdown draft is the detail view
+                  below. */}
+              <BriefingCard b={b} onRegenerate={regenerate} busy={busy} />
+
+              <div className="mt-3 flex gap-2">
+                <input
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submitNote()}
+                  placeholder="Add a Tier-2 note…"
+                  className="flex-1 rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-neutral-500 focus:outline-none"
+                />
+                <button
+                  onClick={submitNote}
+                  disabled={busy || !note.trim()}
+                  className="rounded-md border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
+                >
+                  add note
+                </button>
+              </div>
 
               <div className="mt-4 border-t border-neutral-800 pt-3">
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                  Tier-2 annotations{" "}
-                  <span className="font-normal normal-case text-neutral-600">
-                    — layered on top, the draft above is never changed
-                  </span>
-                </div>
-                {b.annotations.length === 0 ? (
-                  <p className="text-xs text-neutral-600">
-                    No annotations yet. The strong model (via MCP, Phase 8) or
-                    you can layer corrections/context here.
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    {b.annotations.map((a) => (
-                      <AnnotationCard key={a.id} a={a} />
-                    ))}
-                  </div>
-                )}
-
-                <div className="mt-3 flex gap-2">
-                  <input
-                    value={note}
-                    onChange={(e) => setNote(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && submitNote()}
-                    placeholder="Add a Tier-2 note…"
-                    className="flex-1 rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-neutral-500 focus:outline-none"
-                  />
-                  <button
-                    onClick={submitNote}
-                    disabled={busy || !note.trim()}
-                    className="rounded-md border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
-                  >
-                    add note
-                  </button>
-                </div>
+                <Markdown text={b.body} />
               </div>
             </>
           ) : (

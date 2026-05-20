@@ -95,19 +95,50 @@ CREATE TABLE IF NOT EXISTS price_fetch (
 );
 """
 
-# Your initial watchlist, expressed as DATA (the scalability backbone).
-# (symbol, yf_ticker, asset_class, aliases)
+# Watchlist registry as DATA. Each tuple is
+#   (display_symbol, yf_ticker, asset_class, aliases, enabled)
+# Enabled rows show in the watchlist and get analysed. Disabled (enabled=0)
+# rows are HIDDEN but searchable — the `+ Add` UI flips them on by setting
+# enabled=1. Hidden rows have ZERO compute cost: every analysis path uses
+# list_assets(enabled_only=True), so they never fetch, compute, or burn LLM.
+#
+# Seed is now applied via INSERT OR IGNORE (see init_db below), so adding a
+# new entry here is the only change needed — existing DBs pick it up on
+# next boot without resetting anything.
 SEED_ASSETS = [
-    ("SPY", "SPY", "equity", []),
-    ("AAPL", "AAPL", "equity", []),
-    ("INTC", "INTC", "equity", []),
-    ("NVDA", "NVDA", "equity", []),
-    ("TSLA", "TSLA", "equity", []),
-    ("BTC-USD", "BTC-USD", "crypto", []),
-    ("VIX", "^VIX", "index", []),          # display "VIX", yfinance wants ^VIX
-    ("ETH-USD", "ETH-USD", "crypto", []),
-    ("SOL-USD", "SOL-USD", "crypto", []),
-    ("PFE", "PFE", "equity", ["PFIZER"]),  # alias so the AI can resolve names
+    # ---- always-on core ----
+    ("SPY", "SPY", "equity", [], 1),
+    ("AAPL", "AAPL", "equity", [], 1),
+    ("INTC", "INTC", "equity", [], 1),
+    ("NVDA", "NVDA", "equity", [], 1),
+    ("TSLA", "TSLA", "equity", [], 1),
+    ("BTC-USD", "BTC-USD", "crypto", [], 1),
+    ("VIX", "^VIX", "index", [], 1),          # display "VIX", yfinance wants ^VIX
+    ("ETH-USD", "ETH-USD", "crypto", [], 1),
+    ("SOL-USD", "SOL-USD", "crypto", [], 1),
+    ("PFE", "PFE", "equity", ["PFIZER"], 1),  # alias so the AI can resolve names
+    # ---- hidden by default — searchable via the sidebar + button ----
+    # equities the user asked for
+    ("MSTR", "MSTR", "equity", ["MICROSTRATEGY", "STRATEGY"], 0),
+    # commodities as free ETF proxies (per user choice: GLD/SLV not futures)
+    ("GOLD", "GLD", "equity", ["GLD", "SPDR GOLD", "AU"], 0),
+    ("SILVER", "SLV", "equity", ["SLV", "ISHARES SILVER", "AG"], 0),
+    # forex pair — slash dropped from symbol so URL paths don't break
+    ("EGPUSD", "EGPUSD=X", "index", ["EGP/USD", "EGP"], 0),
+    # crude oil futures (yfinance handles the =F suffix). User typed "CLI"
+    # → confirmed crude oil. Display "OIL", aliases for AI resolution.
+    ("OIL", "CL=F", "index", ["CL", "CLI", "WTI", "CRUDE"], 0),
+    # Monero — Binance delisted it; the crypto adapter falls back to
+    # yfinance for symbols Binance doesn't serve (see prices.py).
+    ("XMR-USD", "XMR-USD", "crypto", ["MONERO"], 0),
+    # the Nasdaq megacaps you picked
+    ("MSFT", "MSFT", "equity", ["MICROSOFT"], 0),
+    ("GOOGL", "GOOGL", "equity", ["GOOGLE", "ALPHABET"], 0),
+    ("META", "META", "equity", ["FB", "FACEBOOK"], 0),
+    ("AMZN", "AMZN", "equity", ["AMAZON"], 0),
+    ("AMD", "AMD", "equity", [], 0),
+    ("NFLX", "NFLX", "equity", ["NETFLIX"], 0),
+    ("COIN", "COIN", "equity", ["COINBASE"], 0),
 ]
 
 
@@ -150,16 +181,20 @@ def init_db() -> None:
         conn.executescript(SCHEMA)
         _migrate(conn)
 
-        count = conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
-        if count == 0:
-            conn.executemany(
-                "INSERT INTO assets (symbol, yf_ticker, asset_class, aliases) "
-                "VALUES (?, ?, ?, ?)",
-                [
-                    (sym, yf, cls, json.dumps(aliases))
-                    for sym, yf, cls, aliases in SEED_ASSETS
-                ],
-            )
+        # Additive seed via INSERT OR IGNORE — UNIQUE(symbol) makes already-
+        # present rows a no-op (their enabled state is preserved), and new
+        # SEED_ASSETS entries get inserted with their listed enabled flag.
+        # This is the bridge that lets us ship new (hidden) assets without
+        # a destructive migration on existing DBs.
+        conn.executemany(
+            "INSERT OR IGNORE INTO assets "
+            "(symbol, yf_ticker, asset_class, aliases, enabled) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (sym, yf, cls, json.dumps(aliases), enabled)
+                for sym, yf, cls, aliases, enabled in SEED_ASSETS
+            ],
+        )
 
 
 # Additive, idempotent schema migrations.
@@ -817,3 +852,16 @@ def latest_news_fetch() -> str | None:
             "SELECT saved_at FROM news ORDER BY saved_at DESC LIMIT 1"
         ).fetchone()
     return row["saved_at"] if row else None
+
+
+def set_asset_enabled(symbol: str, enabled: bool) -> bool:
+    """Flip a row's `enabled` flag — that's the only thing the watchlist
+    pipeline reads, so this is the entire "add to / remove from watchlist"
+    operation. Returns True if the row exists (and was updated), False if
+    the symbol isn't known."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE assets SET enabled = ? WHERE symbol = ?",
+            (1 if enabled else 0, symbol.strip().upper()),
+        )
+    return cur.rowcount > 0

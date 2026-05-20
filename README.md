@@ -22,9 +22,9 @@ simplified Bloomberg-terminal feel, and an AI research assistant.
 |---|---|
 | ![Signals](docs/screenshots/signals.png) | ![Macro](docs/screenshots/macro.png) |
 
-| News tab (RSS + descriptive brief) | |
+| News tab (RSS + descriptive brief) | Hidden-asset search picker |
 |---|---|
-| ![News](docs/screenshots/news.png) | |
+| ![News](docs/screenshots/news.png) | ![Picker](docs/screenshots/picker.png) |
 
 ## The idea: a 3-tier "brain"
 
@@ -80,6 +80,17 @@ the model's opinion.
   *narrate* (never invent). News = free RSS headlines (CNBC / WSJ / Fed)
   with an on-demand, descriptive LLM brief that is deliberately walled off
   from the deterministic risk stance.
+- **Crypto Fear & Greed** — fourth tile on the briefing card alongside
+  TREND / BREADTH / VOL. Real values from `alternative.me` (free, no key),
+  6 h read-through cached. Display-only and explicitly walled off from
+  the deterministic risk stance (sentiment ≠ stance).
+- **Hidden assets + search-to-add** — every asset row has an `enabled`
+  flag. The sidebar's **`+`** button opens a search popover over the
+  hidden pool (MSTR, MSFT, GOOGL, META, AMZN, AMD, NFLX, COIN, GLD,
+  SLV, EGP/USD, OIL, XMR-USD); click to add, hover-`×` on any row to
+  remove. Hidden rows incur **zero compute cost** — every analysis path
+  filters on `enabled_only=True`, so they're inert metadata until you
+  promote them.
 
 ## Tech stack
 

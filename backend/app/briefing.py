@@ -142,10 +142,14 @@ def generate(date: str | None = None, force: bool = False) -> dict:
         narrative = _templated(date, seg, vix)
         provenance = {"tier": 1, "provider": "template", "model": "none"}
 
-    # Deterministic top line + bottom section wrap the narrative. These are
-    # always accurate regardless of AI vs fallback.
+    # Body = AI/templated narrative + deterministic "Signals to watch".
+    # The risk stance is NO LONGER prepended here — the briefing card in
+    # the UI surfaces it from `provenance.risk_stance` instead, so prepending
+    # it to the body too would duplicate the same fact in two places. The
+    # value is still preserved in provenance (rationale included), so old
+    # archive entries that have the preamble are unaffected; only new
+    # briefings get the cleaner body.
     body = (
-        f"**Risk stance: {stance['call'].upper()}** — {stance['rationale']}\n\n"
         f"{narrative}\n\n---\n### Signals to watch\n"
         f"{_signals_to_watch(rows)}\n"
     )

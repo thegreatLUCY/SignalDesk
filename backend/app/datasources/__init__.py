@@ -16,3 +16,10 @@ def source_for(asset_class: str) -> DataSource:
     if asset_class == "crypto":
         return _BINANCE
     return _YF  # equity, index, anything else → yfinance
+
+
+def crypto_fallback() -> DataSource:
+    """yfinance, used by prices.get_ohlc when the primary crypto source
+    (Binance) doesn't list a symbol — e.g. privacy coins like XMR that
+    Binance delisted but Yahoo still publishes."""
+    return _YF

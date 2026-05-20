@@ -70,6 +70,30 @@ export type AssetSignals = SignalSummary & {
 
 export const getAssets = () => getJSON<Asset[]>("/assets");
 
+// All assets, INCLUDING hidden (enabled=false). Powers the "+ Add" search
+// — the user picks from this pool to flip a row into the active watchlist.
+export const getAllAssets = () =>
+  getJSON<Asset[]>("/assets?include_disabled=true");
+
+// Flip the watchlist membership. Returns the full updated list so the UI
+// can refresh both the watchlist AND the search pool from one response.
+export async function patchAssetEnabled(
+  symbol: string,
+  enabled: boolean,
+): Promise<Asset[]> {
+  const res = await fetch(
+    `${API_BASE}/assets/${encodeURIComponent(symbol)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    },
+  );
+  if (!res.ok)
+    throw new Error(`API ${res.status} toggling ${symbol}`);
+  return res.json();
+}
+
 export const getWatchlistSignals = () =>
   getJSON<WatchlistSignal[]>("/signals");
 
@@ -173,6 +197,14 @@ export type NewsBrief = {
 export const getMacro = () => getJSON<MacroPoint[]>("/macro");
 export const getNews = () => getJSON<NewsItem[]>("/news");
 export const getNewsBrief = () => getJSON<NewsBrief | null>("/news/brief");
+
+// Crypto Fear & Greed index — alternative.me, deterministic display.
+export type FngPoint = {
+  value: number;          // 0..100
+  label: string;          // "Extreme Fear" … "Extreme Greed"
+  observed_at: string | null;
+};
+export const getFng = () => getJSON<FngPoint | null>("/fng");
 
 // ── Phase 9: journal + notes ───────────────────────────────────────────────
 

@@ -12,6 +12,7 @@ from app.db import init_db
 from app.routes import (
     assets,
     briefings,
+    fng,
     journal,
     macro,
     news,
@@ -50,6 +51,7 @@ app.include_router(journal.router)
 app.include_router(notes.router)
 app.include_router(macro.router)
 app.include_router(news.router)
+app.include_router(fng.router)
 
 
 @app.get("/health")

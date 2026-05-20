@@ -14,7 +14,7 @@ never cache. We use a TTL on our own fetch timestamp instead.
 """
 from datetime import datetime, timedelta, timezone
 
-from app.datasources import source_for
+from app.datasources import crypto_fallback, source_for
 from app.db import (
     get_asset_by_symbol,
     get_last_fetch,
@@ -58,6 +58,14 @@ def get_ohlc(symbol: str, days: int = 180) -> dict:
         )
         try:
             fresh = source.get_ohlc(ticker, days)
+            # Binance doesn't list every crypto (e.g. XMR-USD — privacy coins
+            # got delisted). When the primary crypto source returns nothing,
+            # fall back to yfinance, which still serves the pair. This keeps
+            # the rest of the pipeline ignorant of which source ultimately
+            # answered — the adapter Protocol absorbs the detail.
+            if not fresh and asset["asset_class"] == "crypto":
+                yf_ticker = asset["yf_ticker"] or asset["symbol"]
+                fresh = crypto_fallback().get_ohlc(yf_ticker, days)
             if fresh:
                 upsert_prices(asset["id"], [c.model_dump() for c in fresh])
                 set_last_fetch(

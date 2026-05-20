@@ -16,6 +16,13 @@ class Asset(BaseModel):
     enabled: bool
 
 
+class AssetPatch(BaseModel):
+    """Toggle a row in/out of the watchlist. The only mutable field today —
+    the rest of an asset (ticker / class / aliases) is registry data, not
+    runtime state."""
+    enabled: bool
+
+
 class Candle(BaseModel):
     # `time` is a plain 'YYYY-MM-DD' string on purpose: that's exactly the
     # format TradingView lightweight-charts wants for daily candles (Phase 4),

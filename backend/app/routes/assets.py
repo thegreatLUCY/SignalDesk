@@ -6,8 +6,8 @@ instead of hard-coding symbols.
 """
 from fastapi import APIRouter, HTTPException
 
-from app.db import list_assets
-from app.models import Asset, AssetSignals, OHLCResponse
+from app.db import list_assets, set_asset_enabled
+from app.models import Asset, AssetPatch, AssetSignals, OHLCResponse
 from app.prices import get_ohlc
 from app.signal_service import signals_for_symbol
 
@@ -40,6 +40,17 @@ def get_asset_signals(symbol: str, days: int = 180):
         return signals_for_symbol(symbol, days=days)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown symbol: {symbol}")
+
+
+@router.patch("/{symbol}", response_model=list[Asset])
+def patch_asset(symbol: str, patch: AssetPatch):
+    """Toggle a row in/out of the watchlist (enabled true/false). Returns
+    the full asset list (incl. disabled) so the UI can refresh its search
+    pool in one round-trip. Hidden rows incur zero compute cost — every
+    analysis path filters on enabled_only=True."""
+    if not set_asset_enabled(symbol, patch.enabled):
+        raise HTTPException(status_code=404, detail=f"Unknown symbol: {symbol}")
+    return list_assets(enabled_only=False)
 
 
 # Per-asset notes (the old `asset_analysis` path) were removed: Tier-2 now
